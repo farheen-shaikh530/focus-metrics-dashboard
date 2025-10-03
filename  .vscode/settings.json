@@ -1,0 +1,22 @@
+{
+  // VS Code's built-in CSS validator doesn't understand @tailwind/@apply
+  "css.validate": false,
+  "css.lint.unknownAtRules": "ignore",
+
+  // Point IntelliSense at your Tailwind config (either key works)
+  "tailwindCSS.config": "./tailwind.config.js",
+
+  // Treat all .css as Tailwind-aware for IntelliSense
+  "files.associations": {
+    "*.css": "tailwindcss"
+  },
+
+  // Optional niceties
+  "tailwindCSS.emmetCompletions": true,
+  "tailwindCSS.includeLanguages": {
+    "typescript": "javascript",
+    "typescriptreact": "javascript",
+    "javascriptreact": "javascript",
+    "postcss": "css"
+  }
+}

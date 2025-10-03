@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&display=swap"
+      rel="stylesheet"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>task-dashboard</title>
+
+    <!-- 1) Load Google Identity Services (GSI) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+    <!-- 2) Shim: dispatch a custom event once GSI is ready -->
+    <script>
+      (function waitForGoogle() {
+        if (window.google && window.google.accounts && window.google.accounts.id) {
+          window.dispatchEvent(new Event("google-loaded"));
+        } else {
+          setTimeout(waitForGoogle, 0);
+        }
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+
+    <!-- 3) Load your app AFTER the scripts above -->
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
