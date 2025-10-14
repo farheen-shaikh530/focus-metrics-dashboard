@@ -8,18 +8,19 @@ import {
   ToggleButton,
   Button,
 } from "@mui/material";
+
 import { useTasks } from "@/store/useTasks";
 import type { Task } from "@/types/task";
 import { useAuth } from "@/store/auth";
 
 type Tab = "active" | "in-progress" | "done";
 
-// simple alternating pill colors for the fallback “cards”
+
 const pillColors = [
-  "rgba(255,64,129,0.18)",  // pink-ish
-  "rgba(255,214,0,0.2)",    // yellow-ish
-  "rgba(142,45,226,0.18)",  // purple-ish
-  "rgba(0,184,212,0.18)",   // cyan-ish
+  "rgba(255,64,129,0.18)", 
+  "rgba(255,214,0,0.2)",    
+  "rgba(142,45,226,0.18)",  
+  "rgba(0,184,212,0.18)",   
 ];
 
 export default function BoardMobile() {

@@ -25,3 +25,19 @@ dist-ssr
 # Ignore environment files
 .env
 server/.env
+
+# Node
+node_modules/
+dist/
+.env
+.env.local
+.env.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# IDE / Misc
+.vscode/
+.DS_Store

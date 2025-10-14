@@ -1,118 +1,148 @@
-import { useMemo } from "react";
-import FullCalendar from "@fullcalendar/react";
-import dayGridPlugin from "@fullcalendar/daygrid";
-import timeGridPlugin from "@fullcalendar/timegrid";
-import interactionPlugin from "@fullcalendar/interaction";
-import googleCalendarPlugin from "@fullcalendar/google-calendar";
-import { Box, Stack, Typography } from "@mui/material";
-import dayjs from "dayjs";
+// src/pages/CalendarView.tsx
+import { useEffect, useState } from "react";
+import {
+  Box,
+  Stack,
+  Chip,
+  Typography,
+  Button,
+  Alert,
+  Divider,
+  CircularProgress,
+} from "@mui/material";
 
-import { useTasks } from "../store/useTasks";
-import type { Task } from "../types/task";
+type Shift = {
+  id: string;
+  title: string;
+  start: string; // ISO
+  end: string;   // ISO
+  location?: string;
+  notes?: string;
+};
 
-// correct type imports
-import type { EventInput, DateSelectArg, EventClickArg, EventDropArg } from "@fullcalendar/core";
+const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 
-// Vite envs
-const apiKey = import.meta.env.VITE_GCAL_API_KEY as string | undefined;
-const calendarId = import.meta.env.VITE_GCAL_CALENDAR_ID as string | undefined;
-
-function colorForStatus(status: Task["status"]) {
-  switch (status) {
-    case "done":
-      return "#2e7d32";
-    case "in-progress":
-      return "#fbc02d";
-    default:
-      return "#0288d1";
+// Small fetch->json helper
+async function j<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+  const text = await res.text();
+  let data: any = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    /* ignore */
   }
+  if (!res.ok) throw new Error(data?.detail || text || `HTTP ${res.status}`);
+  return data as T;
 }
 
 export default function CalendarView() {
-  const tasks = useTasks((s) => s.tasks);
-  const update = useTasks((s) => s.updateTask);
+  const [items, setItems] = useState<Shift[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState<string>("");
 
-  // map tasks with dueDate into calendar events
-  const taskEvents: EventInput[] = useMemo(
-    () =>
-      tasks
-        .filter((t) => t.dueDate)
-        .map((t) => ({
-          id: t.id,
-          title: t.title,
-          start: t.dueDate, // ISO (YYYY-MM-DD)
-          allDay: true,
-          backgroundColor: colorForStatus(t.status),
-          borderColor: colorForStatus(t.status),
-        })),
-    [tasks]
-  );
-
-  const onEventDrop = (info: EventDropArg) => {
-    // only update if this event belongs to our task store
-    const taskId = info.event.id;
-    if (!tasks.some((t) => t.id === taskId)) return;
-    const newDate = dayjs(info.event.start!).format("YYYY-MM-DD");
-    update(taskId, { dueDate: newDate });
+  const load = async () => {
+    try {
+      setLoading(true);
+      // only upcoming (end time > now) and 14 days window
+      const data = await j<{ items: Shift[]; cachedAt?: string }>(
+        `/w2w/shifts?days=14&upcoming=true`
+      );
+      setItems(data.items ?? []);
+      setMsg("");
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const onSelect = (arg: DateSelectArg) => {
-    const title = prompt("New task title?");
-    if (!title) return;
-    useTasks.getState().addTask({
-      title,
-      description: "",
-      priority: "medium",
-      status: "todo",
-      dueDate: dayjs(arg.start).format("YYYY-MM-DD"),
-    });
+  useEffect(() => {
+    load();
+  }, []);
+
+  const importTasks = async () => {
+    try {
+      const r = await j<{ created: number; updated: number }>(
+        `/w2w/sync-to-tasks`,
+        { method: "POST" }
+      );
+      setMsg(`Imported shifts → tasks. Created ${r.created}, Updated ${r.updated}.`);
+    } catch (e: any) {
+      setMsg(e?.message || String(e));
+    }
   };
-
-  const onEventClick = (info: EventClickArg) => {
-    const when = info.event.start ? dayjs(info.event.start).format("MMM D, YYYY") : "";
-    alert(`Event: ${info.event.title}\nDate: ${when}`);
-  };
-
-  const calendarPlugins = [dayGridPlugin, timeGridPlugin, interactionPlugin] as any[];
-  if (apiKey && calendarId) calendarPlugins.push(googleCalendarPlugin);
-
-  const googleEventSource =
-    apiKey && calendarId
-      ? {
-          googleCalendarId: calendarId,
-        }
-      : undefined;
 
   return (
-    <Stack sx={{ p: 2 }} spacing={2}>
-      <Typography variant="h5" fontWeight={700}>
-        Calendar
-      </Typography>
+    <Box sx={{ maxWidth: 1040, mx: "auto", p: 3 }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center">
 
-      <Box sx={{ bgcolor: "#fff", borderRadius: 2, boxShadow: 1, p: 1 }}>
-        <FullCalendar
-          plugins={calendarPlugins}
-          initialView="dayGridMonth"
-          headerToolbar={{
-            left: "prev,next today",
-            center: "title",
-            right: "dayGridMonth,timeGridWeek,timeGridDay",
-          }}
-          height="78vh"
-          selectable
-          selectMirror
-          dayMaxEvents
-          // our tasks:
-          events={taskEvents}
-          // optional Google feed:
-          {...(googleEventSource ? { eventSources: [googleEventSource], googleCalendarApiKey: apiKey } : {})}
-          // interactions:
-          editable
-          eventDrop={onEventDrop}
-          select={onSelect}
-          eventClick={onEventClick}
-        />
-      </Box>
-    </Stack>
+<Typography
+  variant="h6"
+  sx={{
+    fontWeight: 900,
+    color: "#fff",
+    textTransform: "uppercase",
+    borderBottom: "3px solid #FFD600",
+    display: "inline-block",
+    pb: 0.3,
+    mb: 1.5,
+  }}
+>
+  Upcoming Shifts
+</Typography>
+
+
+
+
+        <Stack direction="row" spacing={1}>
+          <Button variant="outlined" onClick={load} disabled={loading}>
+            {loading ? "Refreshing…" : "Refresh"}
+          </Button>
+         
+
+        </Stack>
+      </Stack>
+
+      {msg && (
+        <Alert sx={{ mt: 2 }} onClose={() => setMsg("")}>
+          {msg}
+        </Alert>
+      )}
+
+      <Divider sx={{ my: 2 }} />
+
+      {loading ? (
+        <Box sx={{ py: 6, textAlign: "center" }}>
+          <CircularProgress />
+          <Typography sx={{ mt: 1.5 }}>Loading upcoming shifts…</Typography>
+        </Box>
+      ) : items.length === 0 ? (
+        <Typography color="text.secondary">No upcoming shifts found 🎉</Typography>
+      ) : (
+        <Stack direction="row" spacing={1} flexWrap="wrap">
+          {items.map((s) => {
+            const start = new Date(s.start);
+            const end = new Date(s.end);
+            const label =
+              `${start.toLocaleString([], { weekday: "short" })} ` +
+              `${start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}–` +
+              `${end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ` +
+              `${s.title}${s.location ? ` @ ${s.location}` : ""}`;
+            return (
+              <Chip
+                key={s.id}
+                label={label}
+                variant="outlined"
+                sx={{ m: 0.5 }}
+              />
+            );
+          })}
+        </Stack>
+      )}
+    </Box>
   );
 }

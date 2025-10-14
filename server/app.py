@@ -2,18 +2,64 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from typing import List, Literal, Optional
+import re
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Tuple, Optional, Literal
+import json
+from pathlib import Path
+from fastapi import Body
 
-from fastapi import FastAPI, HTTPException
+import requests
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
+from fastapi import Query
 
-# -------- Env / Gemini --------
-load_dotenv()
+
+DATA_DIR = Path(__file__).with_suffix("").parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+W2W_FILE = DATA_DIR / "w2w_links.json"
+
+def _load_links() -> dict[str, str]:
+    if W2W_FILE.exists():
+        try:
+            return json.loads(W2W_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def _save_links(d: dict[str, str]) -> None:
+    W2W_FILE.write_text(json.dumps(d, indent=2))
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Env
+# ──────────────────────────────────────────────────────────────────────────────
+env_here = Path(__file__).with_name(".env")
+if env_here.exists():
+    load_dotenv(env_here)  # server/.env
+load_dotenv()               # fallback: project root .env
+
+GOOGLE_CLIENT_ID = os.getenv("VITE_GOOGLE_CLIENT_ID")
+W2W_ICS_URL = os.getenv("W2W_ICS_URL", "")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Optional Google Sign-In
+# ──────────────────────────────────────────────────────────────────────────────
+try:
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+    GOOGLE_READY = True
+except Exception:
+    GOOGLE_READY = False
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Optional Gemini
+# ──────────────────────────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 try:
     import google.generativeai as genai
     if not GEMINI_API_KEY:
@@ -22,33 +68,46 @@ try:
     GEMINI_READY = True
 except Exception:
     GEMINI_READY = False
+    genai = None  # type: ignore
 
-# -------- Optional Google token verification --------
-try:
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests
-    GOOGLE_READY = True
-except Exception:
-    GOOGLE_READY = False
+def pick_model() -> str:
+    if not GEMINI_READY:
+        return "models/gemini-2.5-flash"
+    preferred = [
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro",
+        "models/gemini-flash-latest",
+        "models/gemini-pro-latest",
+    ]
+    try:
+        models = list(genai.list_models())  # type: ignore
+        usable = {
+            m.name
+            for m in models
+            if "generateContent" in getattr(m, "supported_generation_methods", [])
+        }
+        for want in preferred:
+            if want in usable:
+                return want
+        return next(iter(usable))
+    except Exception:
+        return "models/gemini-2.5-flash"
 
-GOOGLE_CLIENT_ID = os.getenv("VITE_GOOGLE_CLIENT_ID")  # optional audience check
-
-# -------- App / CORS --------
+# ──────────────────────────────────────────────────────────────────────────────
+# FastAPI + CORS
+# ──────────────────────────────────────────────────────────────────────────────
 app = FastAPI()
-
-allow_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------- Domain models --------
+# ──────────────────────────────────────────────────────────────────────────────
+# Domain models (Tasks)
+# ──────────────────────────────────────────────────────────────────────────────
 Status = Literal["todo", "in-progress", "done"]
 Priority = Literal["low", "medium", "high", "urgent"]
 
@@ -64,26 +123,71 @@ class Task(BaseModel):
     timerStartedAt: Optional[str] = None
     createdAt: str
     updatedAt: str
+    # optional external fields (for integrations)
+    externalId: Optional[str] = None
+    source: Optional[str] = None
 
 class TaskPatch(BaseModel):
-    title: str | None = None
-    description: str | None = None
-    priority: Priority | None = None
-    status: Status | None = None
-    dueDate: str | None = None
-    estimateMinutes: int | None = None
-    timeSpentMs: int | None = None
-    timerStartedAt: str | None = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[Priority] = None
+    status: Optional[Status] = None
+    dueDate: Optional[str] = None
+    estimateMinutes: Optional[int] = None
+    timeSpentMs: Optional[int] = None
+    timerStartedAt: Optional[str] = None
 
-# -------- In-memory DB --------
 DB: dict[str, Task] = {}
 
-# -------- Health --------
+# ──────────────────────────────────────────────────────────────────────────────
+# Health
+# ──────────────────────────────────────────────────────────────────────────────
+def _verify_ics(url: str) -> tuple[bool, str]:
+    """Try downloading & parsing ICS. Return (ok, reason)."""
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        events = parse_ics_events(r.text)
+        if not events:
+            return False, "ICS parsed but had no events"
+        return True, "OK"
+    except Exception as e:
+        return False, f"Fetch/parse failed: {e}"
+
+
+# ---------- Integrations status ----------
+@app.get("/integrations/status")
+def integrations_status(email: str):
+    """Return whether this email has a saved ICS link (works for any login method)."""
+    links = _load_links()
+    ics = links.get(email.lower())
+    if not ics:
+        return {"hasW2W": False, "reason": "No ICS URL on file"}
+    ok, reason = _verify_ics(ics)
+    return {"hasW2W": bool(ok), "reason": None if ok else reason, "icsUrl": ics}
+
+class ConnectReq(BaseModel):
+    email: str
+    icsUrl: str
+
+@app.post("/integrations/w2w/connect")
+def integrations_connect(req: ConnectReq):
+    """Save an ICS link for this email after verifying it can be fetched/parsed."""
+    ok, reason = _verify_ics(req.icsUrl)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Invalid ICS: {reason}")
+    links = _load_links()
+    links[req.email.lower()] = req.icsUrl
+    _save_links(links)
+    return {"ok": True}
+
 @app.get("/")
 def home():
     return {"message": "Hello from FastAPI 🚀"}
 
-# -------- Tasks API --------
+# ──────────────────────────────────────────────────────────────────────────────
+# Tasks API
+# ──────────────────────────────────────────────────────────────────────────────
 @app.get("/tasks", response_model=List[Task])
 def list_tasks():
     return list(DB.values())
@@ -99,7 +203,7 @@ def update_task(task_id: str, patch: TaskPatch):
     if not t:
         raise HTTPException(status_code=404, detail="not found")
     data = t.model_dump()
-    data.update(patch.model_dump(exclude_unset=True))
+    data.update({k: v for k, v in patch.model_dump(exclude_unset=True).items()})
     data["updatedAt"] = datetime.utcnow().isoformat()
     DB[task_id] = Task(**data)
     return DB[task_id]
@@ -112,12 +216,12 @@ def weekly_metrics():
         "weeklyOnTime": [{"weekStart": "2025-09-01", "onTimePct": 80}],
     }
 
-# -------- Chat (Gemini) --------
-
-  # -------- Chat (Gemini) --------
+# ──────────────────────────────────────────────────────────────────────────────
+# Chat + Retro
+# ──────────────────────────────────────────────────────────────────────────────
 class ChatReq(BaseModel):
     prompt: str
-    tasks: list[dict] | None = None   # optional task context
+    tasks: Optional[list[dict]] = None
 
 class ChatRes(BaseModel):
     text: str
@@ -125,7 +229,6 @@ class ChatRes(BaseModel):
 @app.post("/chat", response_model=ChatRes)
 def chat(req: ChatReq):
     if not GEMINI_READY:
-        # Fallback heuristic so you still get helpful output during setup
         q = req.prompt.lower()
         if req.tasks and "longer" in q and "task" in q:
             longest = max(req.tasks, key=lambda t: t.get("timeSpentMs", 0), default=None)
@@ -135,70 +238,193 @@ def chat(req: ChatReq):
         return ChatRes(text="I can’t reach Gemini right now. Try a 25-minute timebox on your next task.")
 
     try:
-        # Compact context to keep prompts small
-        summary_lines: List[str] = []
+        summary = ""
         if req.tasks:
-            for t in req.tasks[:50]:
-                summary_lines.append(
-                    f"- {t.get('title','(untitled)')} | "
-                    f"status={t.get('status')} | spent={t.get('timeSpentMs',0)}ms | "
-                    f"created={t.get('createdAt')}"
-                )
-        summary = (
-            "Here are the user's recent tasks:\n" + "\n".join(summary_lines)
-            if summary_lines else ""
-        )
+            lines = [
+                f"- {t.get('title','(untitled)')} | status={t.get('status')} | spent={t.get('timeSpentMs',0)}ms | created={t.get('createdAt')}"
+                for t in req.tasks[:50]
+            ]
+            if lines:
+                summary = "Here are the user's recent tasks:\n" + "\n".join(lines)
 
         system = (
             "You are a helpful productivity coach. "
             "Answer concisely with practical, action-oriented advice. "
-            "If the question relates to tasks, use the provided context. "
-            "Prefer bullet points and short paragraphs."
+            "Use provided task context when relevant. Prefer bullets."
         )
-
-        prompt_text = system
-        if summary:
-            prompt_text += "\n\n" + summary
-        prompt_text += f"\n\nUser question: {req.prompt}"
-
-        # inline call; no unused 'model' variable
-        resp = genai.GenerativeModel("gemini-1.5-flash-latest").generate_content(prompt_text)
+        prompt_text = system + ("\n\n" + summary if summary else "") + f"\n\nUser question: {req.prompt}"
+        model = genai.GenerativeModel(pick_model())  # type: ignore
+        resp = model.generate_content(prompt_text)   # type: ignore
         text = (getattr(resp, "text", None) or "").strip()
-        if not text:
-            text = "I couldn’t generate a response. Try rephrasing?"
-        return ChatRes(text=text)
-
+        return ChatRes(text=text or "I couldn’t generate a response. Try rephrasing?")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
-       
-      
-     
-     
-@app.get("/debug/models")
-def debug_models():
-    try:
-        items = []
-        for m in genai.list_models():
-            items.append({
-                "name": m.name,
-                "methods": getattr(m, "supported_generation_methods", []),
-            })
-        return {"ok": True, "models": items}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
-@app.get("/debug/gemini-ready")
-def debug_gemini_ready():
+class RetroReq(BaseModel):
+    week_start_iso: Optional[str] = None
+
+class RetroRes(BaseModel):
+    text: str
+
+@app.post("/retro", response_model=RetroRes)
+def retro(_: RetroReq):
+    try:
+        done = [t for t in DB.values() if t.status == "done"]
+        created = len(DB)
+        cycles = []
+        for t in done:
+            try:
+                cycles.append(
+                    (datetime.fromisoformat(t.updatedAt) - datetime.fromisoformat(t.createdAt)).total_seconds()/3600
+                )
+            except Exception:
+                pass
+        avg_cycle = round(sum(cycles)/len(cycles), 2) if cycles else 0
+        context = f"Total tasks: {created} • Completed: {len(done)} • Avg cycle time (hrs): {avg_cycle}"
+
+        if not GEMINI_READY:
+            return RetroRes(text=f"Weekly retro: {context}. Try focusing on small batch sizes next week.")
+
+        model = genai.GenerativeModel(pick_model())  # type: ignore
+        prompt = (
+            "You are a concise productivity coach. Using the metrics below, write a brief, friendly weekly retrospective "
+            "with 3 bullet recommendations tailored to the data. Keep it under 120 words.\n\n"
+            f"Metrics: {context}"
+        )
+        resp = model.generate_content(prompt)  # type: ignore
+        text = (getattr(resp, "text", None) or "").strip() or f"Weekly retro: {context}"
+        return RetroRes(text=text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Retro error: {e}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# WhenToWork via ICS (Google Calendar secret .ics)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ---- env
+env_here = Path(__file__).with_name(".env")
+if env_here.exists(): load_dotenv(env_here)
+load_dotenv()
+W2W_ICS_URL = os.getenv("W2W_ICS_URL")  # 👈 your Google “Secret address in iCal format”
+W2W_CACHE: dict = {"at": None, "items": []}
+
+ISO_RE = re.compile(r"^(\d{8})T(\d{6})Z?$")
+
+def _ics_time_to_iso(v: str) -> str:
+    m = ISO_RE.match(v.strip())
+    if not m: return v
+    date, clock = m.groups()
+    dt = datetime.strptime(date + clock, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+def parse_ics_events(ics_text: str) -> List[Dict]:
+    events: List[Dict] = []
+    lines = [ln.rstrip("\r") for ln in ics_text.splitlines()]
+    i, n = 0, len(lines)
+    while i < n:
+        if lines[i].startswith("BEGIN:VEVENT"):
+            block: Dict[str, str] = {}
+            i += 1
+            while i < n and not lines[i].startswith("END:VEVENT"):
+                ln = lines[i]
+                while i + 1 < n and lines[i + 1].startswith(" "):
+                    ln += lines[i + 1][1:]; i += 1
+                if ":" in ln:
+                    k, v = ln.split(":", 1)
+                    k = k.split(";")[0].upper()
+                    block[k] = v
+                i += 1
+            if {"DTSTART","DTEND","SUMMARY"} <= block.keys():
+                events.append({
+                    "id": block.get("UID") or str(hash(block["SUMMARY"]+block["DTSTART"])),
+                    "title": block["SUMMARY"],
+                    "start": _ics_time_to_iso(block["DTSTART"]),
+                    "end": _ics_time_to_iso(block["DTEND"]),
+                    "location": block.get("LOCATION",""),
+                })
+        i += 1
+    return events
+
+def fetch_shifts_from_ics(url: str) -> List[Dict]:
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    return parse_ics_events(r.text)
+
+# ---- FastAPI
+app = FastAPI()
+# ... CORS, other routes ...
+
+@app.get("/w2w/shifts")
+def w2w_shifts(
+    days: int = Query(14, ge=1, le=60),
+    upcoming: bool = Query(False)
+):
+    """
+    Returns shifts from ICS; caches for 15 min.
+    """
+    if not W2W_ICS_URL:
+        raise HTTPException(status_code=500, detail="W2W_ICS_URL is not set in .env")
+
+    now = datetime.now(timezone.utc)
+    # refresh cache
+    if not W2W_CACHE["at"] or (now - W2W_CACHE["at"]).total_seconds() > 900:
+        try:
+            items = fetch_shifts_from_ics(W2W_ICS_URL)
+            W2W_CACHE["items"] = items
+            W2W_CACHE["at"] = now
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"W2W fetch failed: {e}")
+
+    items = list(W2W_CACHE["items"])
+    # optional: filter upcoming
+    if upcoming:
+        items = [s for s in items if datetime.fromisoformat(s["end"]) > now]
+
+    # optional: limit the window
+    end_limit = now + timedelta(days=days)
+    items = [s for s in items if datetime.fromisoformat(s["start"]) <= end_limit]
+
+    return {"items": items, "cachedAt": now.isoformat()}
+
+# --- Integrations status (W2W + Google) ---
+
+@app.get("/integrations/status")
+def integrations_status(email: str = Query(..., description="Signed-in user email")):
+    """
+    Returns whether Google is present (you are already using Google sign-in)
+    and whether W2W ICS looks valid and (optionally) matches the email.
+    """
+    has_google = bool(email)  # you already sign in with Google
+    ics_url = os.getenv("W2W_ICS_URL", "").strip()
+
+    has_w2w = False
+    reason = None
+    if not ics_url:
+        reason = "W2W_ICS_URL is not configured on the server."
+    else:
+        try:
+            r = requests.get(ics_url, timeout=12)
+            r.raise_for_status()
+            text = r.text
+            # Basic validity
+            if "BEGIN:VCALENDAR" in text and "BEGIN:VEVENT" in text:
+                # Optional: require the user's email to appear in the ICS text
+                # Some feeds don't include email, so make this a soft check.
+                has_w2w = (email.lower() in text.lower()) or True
+            else:
+                reason = "ICS feed does not look valid."
+        except Exception as e:
+            reason = f"Failed to fetch ICS: {e}"
+
     return {
-        "GEMINI_READY": GEMINI_READY,
-        "has_key": bool(GEMINI_API_KEY),
-        "key_prefix": (GEMINI_API_KEY[:10] + "…") if GEMINI_API_KEY else None,
+        "hasGoogle": has_google,
+        "hasW2W": has_w2w,
+        "reason": reason,
     }
     
-    
-    
-    
-# -------- Google Sign-in verification (optional) --------
+# ──────────────────────────────────────────────────────────────────────────────
+# Google Auth (optional)
+# ──────────────────────────────────────────────────────────────────────────────
 class GoogleAuthReq(BaseModel):
     id_token: str
 
@@ -210,7 +436,7 @@ def auth_google(req: GoogleAuthReq):
         info = id_token.verify_oauth2_token(
             req.id_token,
             google_requests.Request(),
-            audience=GOOGLE_CLIENT_ID if GOOGLE_CLIENT_ID else None,
+            audience=GOOGLE_CLIENT_ID or None,
         )
         user = {
             "email": info.get("email", ""),
@@ -221,5 +447,3 @@ def auth_google(req: GoogleAuthReq):
         return {"user": user}
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid Google token")
-    
-    

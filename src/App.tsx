@@ -1,25 +1,36 @@
+// src/App.tsx
 import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Suspense } from "react";
+
 import RequireAuth from "./components/RequireAuth";
 import AppLayout from "./components/AppLayout";
 import Login from "./pages/Login";
-import { useAuth } from "./store/auth";
 
-const Productivity = lazy(() => import("./pages/Productivity"));
-const KanbanBoard  = lazy(() => import("./pages/KanbanBoard"));
-const CalendarView = lazy(() => import("./pages/CalendarView"));
-const BoardMobile  = lazy(() => import("./pages/BoardMobile"));
+import Productivity from "./pages/Productivity";
+import CalendarView from "./pages/CalendarView";
+import KanbanBoard from "./pages/KanbanBoard";
+import BoardMobile from "./pages/BoardMobile";
+import { useAuth } from "./store/auth";
 
 export default function App() {
   const [mode, setMode] = useState<"light" | "dark">("light");
+
   const theme = useMemo(
-    () => createTheme({ palette: { mode, primary: { main: "#FFD600" } } }),
+    () =>
+      createTheme({
+        palette: {
+          mode,
+          primary: { main: "#FFD600" },
+        },
+      }),
     [mode]
   );
 
   const { hydrate } = useAuth();
-  useEffect(() => { hydrate(); }, [hydrate]);
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -27,10 +38,10 @@ export default function App() {
       <BrowserRouter>
         <Suspense fallback={<div style={{ padding: 16 }}>Loading…</div>}>
           <Routes>
-            {/* Public login route */}
+            {/* Public */}
             <Route path="/login" element={<Login />} />
 
-            {/* Everything else is protected */}
+            {/* Protected layout and pages */}
             <Route
               element={
                 <RequireAuth>
@@ -38,10 +49,10 @@ export default function App() {
                 </RequireAuth>
               }
             >
-             <Route index element={<BoardMobile />} />
+              <Route index element={<BoardMobile />} />
               <Route path="todo" element={<KanbanBoard />} />
-              <Route path="calendar" element={<CalendarView />} />
               <Route path="productivity" element={<Productivity />} />
+              <Route path="calendar" element={<CalendarView />} />
             </Route>
 
             {/* Fallback */}

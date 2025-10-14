@@ -1,90 +1,102 @@
-import { Box, Typography, Button, Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
-import { useTasks } from "../store/useTasks";
-import { useMemo, useState } from "react";
-import { useAuth } from "@/store/auth";
+import { useEffect, useState } from "react";
+import {
+  Box,
+  Grid,
+  Paper,
+  Typography,
+  Button,
+  CircularProgress,
+  Divider,
+} from "@mui/material";
 
-const { user } = useAuth();
-const firstName = (user?.name || user?.email || "there").split(" ")[0];
+// tiny API helper
+const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+async function j<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+  const txt = await res.text();
+  const data = (() => { try { return JSON.parse(txt); } catch { return txt; } })();
+  if (!res.ok) throw new Error((data as any)?.detail || txt || `HTTP ${res.status}`);
+  return data as T;
+}
 
+type Weekly = { weekStart: string; count?: number; avgCycleMs?: number; onTimePct?: number };
+type Metrics = { weeklyDone: Weekly[]; weeklyCycle: Weekly[]; weeklyOnTime: Weekly[] };
 
 export default function Productivity() {
-  const tasks = useTasks((s) => s.tasks);
-  const [filter, setFilter] = useState<"active" | "done">("active");
+  const [m, setM] = useState<Metrics | null>(null);
+  const [retro, setRetro] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const activeTasks = useMemo(() => tasks.filter((t) => t.status !== "done"), [tasks]);
-  const doneTasks = useMemo(() => tasks.filter((t) => t.status === "done"), [tasks]);
+  useEffect(() => {
+    j<Metrics>("/metrics/weekly").then(setM).catch(console.error);
+  }, []);
 
-  const completedPercent = tasks.length ? Math.round((doneTasks.length / tasks.length) * 100) : 0;
+  const runRetro = async () => {
+    setLoading(true);
+    try {
+      const r = await j<{ text: string }>("/retro", { method: "POST", body: "{}" });
+      setRetro(r.text);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <Box sx={{ position: "relative", height: "100vh", overflow: "hidden" }}>
-      {/* 🔹 Background video */}
-      <video
-        autoPlay
-        muted
-        loop
-        playsInline
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          zIndex: -2,
-        }}
-      >
-        <source src="/videos/background.mp4" type="video/mp4" />
-        Your browser does not support the video tag.
-      </video>
+    <Box sx={{ maxWidth: 1040, mx: "auto", p: 3 }}>
+      <Typography variant="h4" fontWeight={800} mb={1}>
+        Productivity
+      </Typography>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        Quick weekly KPIs and an AI generated retrospective.
+      </Typography>
 
-      {/* 🔹 Dark overlay for readability */}
-      <Box
-        sx={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          bgcolor: "rgba(0,0,0,0.5)",
-          zIndex: -1,
-        }}
-      />
+      <Grid container spacing={2}>
+      <Grid container spacing={2} sx={{ p: 2 }}>
 
-      {/* 🔹 Foreground content */}
-      <Box sx={{ p: 6, color: "#fff" }}>
-    <Typography variant="h4" fontWeight={800}>
-  Hello, {firstName}
-</Typography>
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="overline">Completed (this week)</Typography>
+            <Typography variant="h3" fontWeight={900}>
+              {m?.weeklyDone?.[0]?.count ?? 0}
+            </Typography>
+          </Paper>
+        </Grid>
+       <Grid container spacing={2} sx={{ p: 2 }}>
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="overline">Avg cycle time</Typography>
+            <Typography variant="h5" fontWeight={700}>
+              {m?.weeklyCycle?.[0]?.avgCycleMs
+                ? `${Math.round((m.weeklyCycle[0].avgCycleMs / 3_600_000) * 10) / 10} h`
+                : "—"}
+            </Typography>
+          </Paper>
+        </Grid>
+      <Grid container spacing={2} sx={{ p: 2 }}>
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="overline">On-time %</Typography>
+            <Typography variant="h3" fontWeight={900}>
+              {m?.weeklyOnTime?.[0]?.onTimePct ?? 0}%
+            </Typography>
+          </Paper>
+        </Grid>
+      </Grid>
 
-        <Typography variant="h5" sx={{ opacity: 0.8, mb: 4 }}>
-          Lazy Coffee
-        </Typography>
+      <Box mt={3}>
+        <Button variant="contained" onClick={runRetro} disabled={loading}>
+          {loading ? <CircularProgress size={20} /> : "Run Weekly Retro (AI)"}
+        </Button>
 
-        <Typography variant="h6">
-          You have <b>{filter === "active" ? activeTasks.length : doneTasks.length}</b>{" "}
-          {filter === "active" ? "active tasks" : "completed tasks"}
-        </Typography>
-
-        <Typography variant="body1" sx={{ mt: 2 }}>
-          Completed: {completedPercent}%
-        </Typography>
-
-        {/* Active / Done toggle */}
-        <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
-          <ToggleButtonGroup
-            value={filter}
-            exclusive
-            onChange={(_, v) => v && setFilter(v)}
-          >
-            <ToggleButton value="active" sx={{ color: "#fff" }}>
-              Active
-            </ToggleButton>
-            <ToggleButton value="done" sx={{ color: "#fff" }}>
-              Done
-            </ToggleButton>
-          </ToggleButtonGroup>
-        </Stack>
+        {retro && (
+          <Paper sx={{ p: 2, mt: 2 }}>
+            <Typography variant="subtitle2" color="text.secondary">
+              Weekly Retro
+            </Typography>
+            <Divider sx={{ my: 1 }} />
+            <Typography whiteSpace="pre-wrap">{retro}</Typography>
+          </Paper>
+        )}
       </Box>
     </Box>
   );

@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek";
 import isSameOrBefore from "dayjs/plugin/isSameOrBefore";
+import { useGoals } from "./goals";
 
 import type { Task, Status } from "../types/task";
 import { loadTasks, saveTasks } from "../utils/storage";
@@ -26,8 +27,10 @@ type State = {
   hydrated: boolean;
   history: TaskHistory[];
 };
+useGoals.getState().bumpOnDone(new Date().toISOString());
 
 type Actions = {
+  
   /** Hydrate from FastAPI if available, otherwise from localStorage */
   hydrate: () => Promise<void>;
 

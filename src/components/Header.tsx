@@ -5,18 +5,17 @@ import {
   Typography,
   Stack,
   Button,
-  Switch,
   Tooltip,
   IconButton,
+  Avatar,
   Box,
+  Chip,
 } from "@mui/material";
-import { Link, useLocation } from "react-router-dom";
-import { useState } from "react";
-import HistoryIcon from "@mui/icons-material/History";
+import { Link, useNavigate, useLocation } from "react-router-dom";
+import HomeIcon from "@mui/icons-material/Home";
 import LogoutIcon from "@mui/icons-material/Logout";
-
-import HistoryDrawer from "./HistoryDrawer";
-import TaskFormDialog from "./TaskFormDialog";
+import LoginIcon from "@mui/icons-material/Login";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/store/auth";
 import { useTasks } from "@/store/useTasks";
 
@@ -27,117 +26,233 @@ export default function Header({
   mode: "light" | "dark";
   setMode: (m: "light" | "dark") => void;
 }) {
-  
+  const navigate = useNavigate();
   const { pathname } = useLocation();
   const { user, logout } = useAuth();
 
-  const [open, setOpen] = useState(false);            // new task dialog
-  const [showHistory, setShowHistory] = useState(false); // history drawer
+  const [hasW2W, setHasW2W] = useState(false);
+  const [whyBlocked, setWhyBlocked] = useState<string | null>(null);
+
+  // shared style so all buttons look identical
+  const pillBtnSx = useMemo(
+    () => ({
+      borderColor: "rgba(255,255,255,0.4)",
+      color: "#fff",
+      textTransform: "none",
+      fontWeight: 600,
+      borderRadius: 999,
+      px: 2.5,
+      py: 0.8,
+      minHeight: 40,
+      "&:hover": {
+        bgcolor: "rgba(255,255,255,0.2)",
+        borderColor: "rgba(255,255,255,0.7)",
+      },
+      "&.Mui-disabled": {
+        color: "rgba(255,255,255,0.6)",
+        borderColor: "rgba(255,255,255,0.25)",
+      },
+    }),
+    []
+  );
+
+  // 🔍 Check WhenToWork integration (simple status)
+ useEffect(() => {
+  const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+  const email = user?.email;
+  if (!email) {
+    setHasW2W(false);
+    setWhyBlocked("Sign in to enable imports.");
+    return;
+  }
+  fetch(`${API}/integrations/status?email=${encodeURIComponent(email)}`)
+    .then((r) => r.json())
+    .then((d) => {
+      setHasW2W(!!d.hasW2W);
+      setWhyBlocked(d.hasW2W ? null : d.reason || "Connect WhenToWork to enable imports.");
+    })
+
+}, [user]);
 
   return (
     <>
-      <AppBar position="fixed" elevation={0} sx={{ bgcolor: "#FF4081", color: "#fff" }}>
-        <Toolbar sx={{ gap: 5, minHeight: 100 }}>
-          {/* Title + subtitle */}
-          <Box sx={{ flexGrow: 1, lineHeight: 1 }}>
-            <Typography variant="h6" sx={{ fontFamily: "'Alfa Slab One', cursive", letterSpacing: 1 }}>
-              Stay focused, make it happen!
-            </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.85, fontSize: "0.8rem", fontStyle: "italic" }}>
-              Work in Motion — tasks and progress, always moving
-            </Typography>
-          </Box>
-
-          {/* Nav */}
-          <Stack direction="row" spacing={1} sx={{ mr: 1 }}>
-            <Button
+      <AppBar
+        position="fixed"
+        elevation={0}
+        sx={{
+          backgroundColor: "#a0822a",
+          backgroundImage: "url('/header-bg.png')",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          color: "#fff",
+          boxShadow: "none",
+        }}
+      >
+        <Toolbar
+          sx={{
+            backdropFilter: "blur(6px)",
+            backgroundColor: "rgba(0, 0, 0, 0.3)",
+            minHeight: 85,
+            px: { xs: 2, md: 4 },
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 2,
+          }}
+        >
+          {/* === Left: Home + Title === */}
+          <Stack direction="row" alignItems="center" spacing={1.5}>
+            <IconButton
               component={Link}
               to="/"
-              color="inherit"
-              variant={pathname === "/" ? "contained" : "text"}
-              sx={pathname === "/" ? { bgcolor: "rgba(255,255,255,0.18)" } : undefined}
-              size="small"
+              sx={{
+                color: "white",
+                bgcolor: "rgba(255,255,255,0.1)",
+                "&:hover": { bgcolor: "rgba(255,255,255,0.25)" },
+              }}
+              aria-label="Home"
             >
-              Productivity
-            </Button>
-            <Button
-              component={Link}
-              to="/todo"
-              color="inherit"
-              variant={pathname === "/todo" ? "contained" : "text"}
-              sx={pathname === "/todo" ? { bgcolor: "rgba(255,255,255,0.18)" } : undefined}
-              size="small"
-            >
-              Todo
-            </Button>
-            <Button
-              component={Link}
-              to="/calendar"
-              color="inherit"
-              variant={pathname === "/calendar" ? "contained" : "text"}
-              sx={pathname === "/calendar" ? { bgcolor: "rgba(255,255,255,0.18)" } : undefined}
-              size="small"
-            >
-              Calendar
-            </Button>
+              <HomeIcon />
+            </IconButton>
+            <Box>
+              <Typography
+                variant="h6"
+                sx={{
+                  fontWeight: 900,
+                  letterSpacing: 0.5,
+                  color: "#fff",
+                  fontFamily: "'Poppins', sans-serif",
+                }}
+              >
+                WEEKLY <Box component="span" sx={{ color: "#FFD54F" }}>DASHBOARD</Box>
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{ fontStyle: "italic", color: "rgba(255,255,255,0.85)" }}
+              >
+                Empower your flow — elevate your week
+              </Typography>
+            </Box>
           </Stack>
 
-          {/* Dark mode */}
-          <Tooltip title="Toggle dark mode">
-            <Switch
-              checked={mode === "dark"}
-              onChange={(e) => setMode(e.target.checked ? "dark" : "light")}
-              inputProps={{ "aria-label": "Dark mode" }}
-            />
-          </Tooltip>
+          {/* === Center: Nav === */}
+          <Stack direction="row" spacing={1.25} alignItems="center">
+            {[
+              { label: "Productivity", path: "/productivity" },
+              { label: "To-Do", path: "/todo" },
+              { label: "Calendar", path: "/calendar" },
+            ].map((b) => (
+              <Button
+                key={b.label}
+                component={Link}
+                to={b.path}
+                variant={pathname === b.path ? "contained" : "outlined"}
+                color="inherit"
+                sx={{
+                  ...pillBtnSx,
+                  ...(pathname === b.path && {
+                    bgcolor: "rgba(255,255,255,0.22)",
+                    borderColor: "rgba(255,255,255,0.0)",
+                  }),
+                }}
+              >
+                {b.label}
+              </Button>
+            ))}
+          </Stack>
 
-          {/* History */}
-          <Tooltip title="Task history">
-            <IconButton color="inherit" onClick={() => setShowHistory(true)} aria-label="Open history">
-              <HistoryIcon />
-            </IconButton>
-          </Tooltip>
+          {/* === Right: Actions + Auth === */}
+          <Stack direction="row" spacing={1.25} alignItems="center">
+            {/* Import button (gated) */}
+            <Tooltip
+              title={
+                hasW2W ? "Import your WhenToWork shifts as tasks"
+                       : (whyBlocked || "Connect WhenToWork to enable imports.")
+              }
+            >
+              <span>
+                <Button
+                  variant="outlined"
+                  sx={pillBtnSx}
+                  
+                  disabled={!hasW2W}
+                >
+                  Import Shifts → Tasks
+                </Button>
+              </span>
+            </Tooltip>
 
-          {/* New Task */}
-        <Button
-  color="inherit"
-  onClick={() => {
-    const title = prompt("New task title?");
-    if (!title) return;
-    useTasks.getState().addTask({
-      title,
-      description: "",
-      priority: "medium",
-      status: "todo",
-    });
-  }}
->
-  New Task
-</Button>
+            {/* New Task */}
+            <Button
+              variant="outlined"
+              sx={pillBtnSx}
+              onClick={() => {
+                if (!user) { navigate("/login"); return; }
+                const title = prompt("New task title?");
+                if (!title) return;
+                useTasks.getState().addTask({
+                  title,
+                  description: "",
+                  priority: "medium",
+                  status: "todo",
+                });
+              }}
+            >
+              + New Task
+            </Button>
 
-
-          {/* Current user + Logout */}
-          {user && (
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: 1 }}>
-              <Typography variant="body2" sx={{ opacity: 0.9 }}>
-                {user.name || user.email}
-              </Typography>
-              <Tooltip title="Sign out">
-                <IconButton color="inherit" onClick={logout} aria-label="Logout">
-                  <LogoutIcon />
-                </IconButton>
-              </Tooltip>
-            </Stack>
-          )}
+            {/* Auth area */}
+            {!user ? (
+              <Button
+                variant="outlined"
+                sx={pillBtnSx}
+                startIcon={<LoginIcon />}
+                onClick={() => navigate("/login")}
+              >
+                Sign in
+              </Button>
+            ) : (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Tooltip title={user.name || user.email}>
+                  <Avatar
+                    src={user.picture}
+                    alt={user.name}
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      border: "2px solid rgba(255,255,255,0.4)",
+                    }}
+                  />
+                </Tooltip>
+                <Tooltip title="Sign out">
+                  <IconButton color="inherit" onClick={logout} aria-label="Sign out">
+                    <LogoutIcon />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            )}
+          </Stack>
         </Toolbar>
+
+        {/* (Optional) show reason banner if blocked */}
+        {!hasW2W && whyBlocked && (
+          <Box sx={{ px: { xs: 2, md: 4 }, pb: 1 }}>
+            <Chip
+              label={whyBlocked}
+              variant="outlined"
+              sx={{
+                borderColor: "rgba(255,255,255,0.5)",
+                color: "#fff",
+                backdropFilter: "blur(4px)",
+                bgcolor: "rgba(0,0,0,0.15)",
+              }}
+            />
+          </Box>
+        )}
       </AppBar>
 
       {/* Spacer so content isn’t under the AppBar */}
       <Toolbar />
-
-      {/* Drawers / Dialogs */}
-      <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
-      <TaskFormDialog open={open} onClose={() => setOpen(false)} />
     </>
   );
 }
