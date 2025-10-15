@@ -21,6 +21,10 @@ from fastapi import Query
 DATA_DIR = Path(__file__).with_suffix("").parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 W2W_FILE = DATA_DIR / "w2w_links.json"
+GCAL_ICS_URL = os.getenv("GCAL_ICS_URL")
+_INTEGRATION_CACHE = {"at": 0.0, "data": None}
+_CACHE_TTL_SEC = 300  
+
 
 def _load_links() -> dict[str, str]:
     if W2W_FILE.exists():
@@ -350,8 +354,7 @@ def fetch_shifts_from_ics(url: str) -> List[Dict]:
     r.raise_for_status()
     return parse_ics_events(r.text)
 
-# ---- FastAPI
-app = FastAPI()
+
 # ... CORS, other routes ...
 
 @app.get("/w2w/shifts")
@@ -386,42 +389,145 @@ def w2w_shifts(
 
     return {"items": items, "cachedAt": now.isoformat()}
 
-# --- Integrations status (W2W + Google) ---
+# --- Integrations status (W2W) ---
+
+@app.get("/integrations/status")
+def integrations_status(email: str = Query(..., description="Signed-in user email")):
+    w2w_url  = os.getenv("W2W_ICS_URL", "").strip()
+    gcal_url = os.getenv("GCAL_ICS_URL", "").strip()
+
+    def probe(url: str) -> tuple[bool, str | None]:
+        if not url:
+            return False, "Missing ICS URL in server .env"
+        try:
+            r = requests.get(url, timeout=12)
+            r.raise_for_status()
+            txt = r.text
+            if "BEGIN:VCALENDAR" in txt and "BEGIN:VEVENT" in txt:
+                # NOTE: some feeds won't contain email; don't hard-require it
+                return True, None
+            return False, "ICS feed does not look valid"
+        except Exception as e:
+            return False, f"Fetch error: {e}"
+
+    hasW2W, w2wReason   = probe(w2w_url)
+    hasGCal, gcalReason = probe(gcal_url)
+
+    return {
+        "email": email,
+        "hasW2W": hasW2W,
+        "w2wReason": w2wReason,
+        "hasGCal": hasGCal,
+        "gcalReason": gcalReason,
+    }
+      
+# --- Integrations status (Google Calendar) ---
+def _check_ics(url: str, want_email: str | None = None) -> tuple[bool, str | None]:
+    """
+    Validate an ICS feed quickly. If want_email is provided, we do a soft check
+    (don't fail if it's missing; many feeds omit owner email).
+    """
+    if not url:
+        return False, "No ICS URL configured."
+    try:
+        r = requests.get(url, timeout=12)
+        r.raise_for_status()
+        text = r.text or ""
+        if "BEGIN:VCALENDAR" not in text or "BEGIN:VEVENT" not in text:
+            return False, "ICS feed does not look valid."
+        if want_email and want_email.lower() in text.lower():
+            return True, None
+        # Soft pass even if email isn't present
+        return True, None
+    except Exception as e:
+        return False, f"Failed to fetch ICS: {e}"
 
 @app.get("/integrations/status")
 def integrations_status(email: str = Query(..., description="Signed-in user email")):
     """
-    Returns whether Google is present (you are already using Google sign-in)
-    and whether W2W ICS looks valid and (optionally) matches the email.
+    Returns availability of WhenToWork & Google Calendar imports
+    based on configured ICS feeds.
     """
-    has_google = bool(email)  # you already sign in with Google
-    ics_url = os.getenv("W2W_ICS_URL", "").strip()
+    now = time.time()
+    if _INTEGRATION_CACHE["data"] and (now - _INTEGRATION_CACHE["at"] < _CACHE_TTL_SEC):
+        return _INTEGRATION_CACHE["data"]
 
-    has_w2w = False
-    reason = None
-    if not ics_url:
-        reason = "W2W_ICS_URL is not configured on the server."
-    else:
-        try:
-            r = requests.get(ics_url, timeout=12)
-            r.raise_for_status()
-            text = r.text
-            # Basic validity
-            if "BEGIN:VCALENDAR" in text and "BEGIN:VEVENT" in text:
-                # Optional: require the user's email to appear in the ICS text
-                # Some feeds don't include email, so make this a soft check.
-                has_w2w = (email.lower() in text.lower()) or True
-            else:
-                reason = "ICS feed does not look valid."
-        except Exception as e:
-            reason = f"Failed to fetch ICS: {e}"
+    w2w_url  = os.getenv("W2W_ICS_URL", "").strip()
+    gcal_url = os.getenv("GCAL_ICS_URL", "").strip()  # <-- add this to your .env (frontend doesn't see it)
 
-    return {
-        "hasGoogle": has_google,
+    has_w2w, w2w_reason   = _check_ics(w2w_url, want_email=email)
+    has_gcal, gcal_reason = _check_ics(gcal_url, want_email=email)
+
+    payload = {
         "hasW2W": has_w2w,
-        "reason": reason,
+        "w2wReason": w2w_reason,
+        "hasGCal": has_gcal,
+        "gcalReason": gcal_reason,
     }
-    
+    _INTEGRATION_CACHE["data"] = payload
+    _INTEGRATION_CACHE["at"] = now
+    return payload
+
+
+@app.post("/gcal/sync-to-tasks")
+def gcal_sync_to_tasks():
+    """
+    Pull events from Google Calendar ICS (secret address) and create/update tasks.
+    Only imports future or ongoing events (>= now).
+    """
+    if not GCAL_ICS_URL:
+        raise HTTPException(status_code=500, detail="GCAL_ICS_URL is not set in .env")
+
+    try:
+        items, _ = fetch_shifts_from_ics(GCAL_ICS_URL)
+
+        now = datetime.utcnow().isoformat()
+        created, updated = 0, 0
+        for ev in items:
+            # Skip past events
+            if ev["end"] < now:
+                continue
+
+            # Build a consistent external id
+            eid = f"gcal-{ev['id']}"
+            title = ev["title"] or "Calendar event"
+            shift_title = f"{title}{(' @ ' + ev.get('location','').strip()) if ev.get('location') else ''}"
+
+            # Find existing task by externalId (if your Task model doesn’t have it,
+            # we just match by id key and keep the rest minimal)
+            existing = next((t for t in DB.values() if getattr(t, "externalId", None) == eid), None)
+
+            base = {
+                "title": shift_title,
+                "description": (ev.get("raw", {}).get("description") or "").strip(),
+                "priority": "medium",
+                "status": "todo",
+                "createdAt": ev["start"],
+                "updatedAt": ev["start"],
+                "dueDate": ev["end"],
+            }
+
+            if existing:
+                data = existing.model_dump()
+                data.update({
+                    "title": base["title"],
+                    "description": base["description"],
+                    "dueDate": base["dueDate"],
+                    "updatedAt": datetime.utcnow().isoformat(),
+                })
+                DB[existing.id] = Task(**data)
+                updated += 1
+            else:
+                tid = eid  # stable id
+                DB[tid] = Task(id=tid, **base)
+                # If you want to persist externalId/source, extend your Task model to include them.
+                created += 1
+
+        return {"created": created, "updated": updated}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GCAL fetch failed: {e}")
+   
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Google Auth (optional)
 # ──────────────────────────────────────────────────────────────────────────────
