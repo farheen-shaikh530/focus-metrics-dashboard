@@ -73,3 +73,23 @@ Google Gemini API, Google Calendar ICS, WhenToWork ICS
 ```bash
 git clone https://github.com/farheen-shaikh530/focus-metrics-dashboard.git
 cd focus-metrics-dashboard
+```
+
+2️⃣ Frontend
+```bash
+npm install
+npm run dev
+```
+
+3️⃣ Backend
+```bash
+cd server
+pip install -r requirements.txt
+uvicorn app:app --reload --app-dir server --port 8000
+```
+
+
+
+
+
+
