@@ -41,3 +41,4 @@ __pycache__/
 # IDE / Misc
 .vscode/
 .DS_Store
+__pycache__/
