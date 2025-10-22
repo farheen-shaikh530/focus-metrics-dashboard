@@ -18,6 +18,8 @@ import LoginIcon from "@mui/icons-material/Login";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/store/auth";
 import { useTasks } from "@/store/useTasks";
+console.log("API_URL", import.meta.env.VITE_API_URL);
+console.log("GOOGLE_CLIENT_ID", import.meta.env.VITE_GOOGLE_CLIENT_ID); 
 
 export default function Header({
   mode,
@@ -67,8 +69,7 @@ export default function Header({
     .catch(() => {
       setHasW2W(false);
       setHasGCal(false);
-      setWhyW2W("Could not reach server");
-      setWhyGCal("Could not reach server");
+      
     });
 }, [user]);
 
