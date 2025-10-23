@@ -88,8 +88,9 @@ pip install -r requirements.txt
 uvicorn app:app --reload --app-dir server --port 8000
 ```
 
+## 🌟 Focus Metrics Dashboard (Live Demo Preview)
 
-
+  
 
 
 
