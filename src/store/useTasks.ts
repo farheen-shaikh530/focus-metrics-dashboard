@@ -64,6 +64,10 @@ export type TaskStore = State & Actions;
 
 const nowISO = () => new Date().toISOString();
 
+const touchList = (s: any) => {
+  s.tasks = [...s.tasks];
+};
+
 const persist = (s: State) => {
   saveTasks({ tasks: s.tasks, history: s.history });
 };
@@ -106,10 +110,17 @@ export const useTasks = create<TaskStore>()(
           tasks: [],
           history: [],
         });
+        
         set((s) => {
-          s.tasks = local.tasks || [];
-          s.history = local.history || [];
-          s.hydrated = true;
+             s.tasks.forEach((t) => {
+      if (t.status === "done" && !t.completedAt) {
+        // best-effort: use updatedAt as completion time
+        t.completedAt = t.updatedAt || nowISO();
+      }
+    });
+        touchList(s);
+
+         
         });
       }
     },
@@ -137,42 +148,97 @@ export const useTasks = create<TaskStore>()(
         persist(s);
       }),
 
-    updateTask: (id, patch) =>
-      set((s) => {
-        const t = s.tasks.find((x) => x.id === id);
-        if (!t) return;
-        const before = { ...t };
-        Object.assign(t, patch);
-        t.updatedAt = nowISO();
-        s.history.unshift({
-          id: nanoid(),
-          taskId: id,
-          type: "update",
-          at: t.updatedAt,
-          payload: { patch, before },
-        });
-        persist(s);
-      }),
+      updateTask: (id, patch) =>
+  set((s) => {
+    const t = s.tasks.find((x) => x.id === id);
+    if (!t) return;
 
-    moveTask: (id, nextStatus, index) =>
-      set((s) => {
-        const i = s.tasks.findIndex((t) => t.id === id);
-        if (i < 0) return;
-        const [t] = s.tasks.splice(i, 1);
-        const from = t.status;
-        t.status = nextStatus;
-        t.updatedAt = nowISO();
-        if (index === undefined) s.tasks.unshift(t);
-        else s.tasks.splice(index, 0, t);
-        s.history.unshift({
-          id: nanoid(),
-          taskId: id,
-          type: "move",
-          at: t.updatedAt,
-          payload: { from, to: nextStatus },
-        });
-        persist(s);
-      }),
+    const before = { ...t };
+    const wasDone = t.status === "done";
+
+    Object.assign(t, patch);
+
+    // If it *became* done right now, set completedAt once
+    if (t.status === "done" && !wasDone && !t.completedAt) {
+      t.completedAt = nowISO();
+    }
+
+    t.updatedAt = nowISO();
+    s.history.unshift({
+      id: nanoid(),
+      taskId: id,
+      type: "update",
+      at: t.updatedAt,
+      payload: { patch, before },
+    });
+
+    touchList(s);   // <— force new array ref
+    persist(s);
+  }),
+
+ moveTask: (id, nextStatus, index) =>
+  set((s) => {
+    const i = s.tasks.findIndex((t) => t.id === id);
+    if (i < 0) return;
+
+    const [t] = s.tasks.splice(i, 1);
+    const from = t.status;
+    t.status = nextStatus;
+
+    if (nextStatus === "done" && !t.completedAt) {
+      t.completedAt = nowISO();
+    }
+
+    t.updatedAt = nowISO();
+    if (index === undefined) s.tasks.unshift(t);
+    else s.tasks.splice(index, 0, t);
+
+    s.history.unshift({
+      id: nanoid(),
+      taskId: id,
+      type: "move",
+      at: t.updatedAt,
+      payload: { from, to: nextStatus },
+    });
+
+    touchList(s);   // <— force new array ref
+    persist(s);
+  }),
+
+
+stopTimerAndOptionallyComplete: (id, markDone = false) =>
+  set((s) => {
+    const t = s.tasks.find((x) => x.id === id);
+    if (!t) return;
+
+    if (t.timerStartedAt) {
+      const started = new Date(t.timerStartedAt).getTime();
+      const add = Math.max(0, Date.now() - started);
+      t.timeSpentMs = (t.timeSpentMs || 0) + add;
+      t.timerStartedAt = null;
+    }
+
+    if (markDone && t.status !== "done") {
+      const from = t.status;
+      t.status = "done";
+      if (!t.completedAt) t.completedAt = nowISO();
+
+      s.history.unshift({
+        id: nanoid(),
+        taskId: id,
+        type: "move",
+        at: nowISO(),
+        payload: { from, to: "done" },
+      });
+    }
+
+    t.updatedAt = nowISO();
+
+    touchList(s);   // <— force new array ref
+    persist(s);
+  }),
+  
+
 
     deleteTask: (id) =>
       set((s) => {

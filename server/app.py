@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from datetime import timezone
+
 
 # ───────────────────────────── Env ─────────────────────────────
 env_here = Path(__file__).with_name(".env")
@@ -49,7 +51,11 @@ def pick_model() -> str:
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://10.15.150.131:5173",  # optional: your LAN IP if you use it
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -274,6 +280,7 @@ def update_task(task_id: str, patch: TaskPatch):
     DB[task_id] = Task(**data)
     return DB[task_id]
 
+
 # ───────────────────────────── Google Auth (optional) ─────────────────────────────
 class GoogleAuthReq(BaseModel):
     id_token: str
@@ -297,3 +304,69 @@ def auth_google(req: GoogleAuthReq):
         return {"user": user}
     except Exception:
         raise HTTPException(400, "Invalid Google token")
+   
+
+
+@app.get("/metrics/weekly")
+def metrics_weekly():
+    """
+    Compute simple weekly metrics from the in-memory DB:
+    - how many tasks were completed this week
+    - average cycle time (ms) for those completed tasks
+    - on-time % (completed before or on dueDate)
+    Returns arrays so the frontend can chart by week.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Week window: Monday 00:00:00 -> next Monday 00:00:00 (UTC)
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_end = week_start + timedelta(days=7)
+
+    def as_aware(dt_str: str | None) -> datetime | None:
+        if not dt_str:
+            return None
+        # tolerate naive ISO by assuming UTC
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    # Completed within this week
+    done = []
+    for t in DB.values():
+        if t.status != "done":
+            continue
+        upd = as_aware(t.updatedAt)
+        if not upd or upd < week_start or upd >= week_end:
+            continue
+        done.append(t)
+
+    # Avg cycle time for completed (updated - created)
+    cycles_ms: list[int] = []
+    for t in done:
+        created = as_aware(t.createdAt)
+        updated = as_aware(t.updatedAt)
+        if created and updated:
+            ms = int((updated - created).total_seconds() * 1000)
+            if ms >= 0:
+                cycles_ms.append(ms)
+
+    avg_cycle_ms = int(sum(cycles_ms) / len(cycles_ms)) if cycles_ms else 0
+
+    # On-time: completed <= dueDate (only for tasks that have dueDate)
+    with_due = [t for t in done if t.dueDate]
+    on_time = 0
+    for t in with_due:
+        updated = as_aware(t.updatedAt)
+        due = as_aware(t.dueDate)
+        if updated and due and updated <= due:
+            on_time += 1
+    on_time_pct = round((on_time / len(with_due)) * 100) if with_due else 0
+
+    wk = week_start.date().isoformat()
+    return {
+        "weeklyDone":  [{"weekStart": wk, "count": len(done)}],
+        "weeklyCycle": [{"weekStart": wk, "avgCycleMs": avg_cycle_ms}],
+        "weeklyOnTime": [{"weekStart": wk, "onTimePct": on_time_pct}],
+    }
+    

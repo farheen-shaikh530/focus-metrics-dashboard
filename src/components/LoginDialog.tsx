@@ -19,10 +19,9 @@ import { motion, useAnimationControls } from "framer-motion";
 import { useAuth } from "@/store/auth";
 import GoogleSignInButton from "@/components/GoogleSignInButton";
 
-type Props = {
-  open: boolean;
-  onClose?: () => void;
-};
+type Props = { open: boolean; onClose?: () => void };
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginDialog({ open, onClose }: Props) {
   const { user, login, register, hydrate, loginWithGoogle } = useAuth();
@@ -36,15 +35,14 @@ export default function LoginDialog({ open, onClose }: Props) {
 
   const controls = useAnimationControls();
 
-  // hydrate auth store on mount
   useEffect(() => { hydrate(); }, [hydrate]);
+  useEffect(() => { if (user && open && onClose) onClose(); }, [user, open, onClose]);
 
-  // if the user logs in successfully, close the dialog
-  useEffect(() => {
-    if (user && open && onClose) onClose();
-  }, [user, open, onClose]);
+  // validation
+  const emailError = email.length > 0 && !EMAIL_RE.test(email);
+  const pwdError = pwd.length > 0 && pwd.length < 6; // tweak as you like (8, etc.)
+  const isValid = useMemo(() => EMAIL_RE.test(email) && pwd.length >= 6, [email, pwd]);
 
-  // playful float for wrong creds
   const startFloat = () => {
     controls.start({
       x: [0, -200, 200, -150, 150, 0],
@@ -54,17 +52,11 @@ export default function LoginDialog({ open, onClose }: Props) {
     });
   };
   const stopFloat = () => { controls.stop(); controls.set({ x: 0, y: 0, rotate: 0 }); };
-
   const resetErrors = () => { setError(null); setWrongCreds(false); stopFloat(); };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !pwd.trim()) {
-      setError("Email and password are required.");
-      setWrongCreds(true);
-      startFloat();
-      return;
-    }
+    if (!isValid) return; // do nothing if invalid
     try {
       setSubmitting(true);
       await login(email.trim(), pwd);
@@ -79,12 +71,7 @@ export default function LoginDialog({ open, onClose }: Props) {
   };
 
   const onSignUp = async () => {
-    if (!email.trim() || !pwd.trim()) {
-      setError("Email and password are required.");
-      setWrongCreds(true);
-      startFloat();
-      return;
-    }
+    if (!isValid) return;
     try {
       setSubmitting(true);
       await register(email.trim(), pwd);
@@ -97,16 +84,17 @@ export default function LoginDialog({ open, onClose }: Props) {
   };
 
   const handleKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (ev) => {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      void onSubmit(ev as any);
-    }
+    if (ev.key === "Enter") { ev.preventDefault(); void onSubmit(ev as any); }
   };
 
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={(_, reason) => {
+        // block accidental close while submitting
+        if (submitting && (reason === "backdropClick" || reason === "escapeKeyDown")) return;
+        onClose?.();
+      }}
       fullWidth
       maxWidth="xs"
       aria-labelledby="login-title"
@@ -116,11 +104,9 @@ export default function LoginDialog({ open, onClose }: Props) {
         sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", pr: 1 }}
       >
         <Typography variant="h6" fontWeight={800}>Welcome</Typography>
-        {onClose && (
-          <IconButton size="small" onClick={onClose} aria-label="Close">
-            <CloseIcon />
-          </IconButton>
-        )}
+        <IconButton size="small" onClick={() => !submitting && onClose?.()} aria-label="Close">
+          <CloseIcon />
+        </IconButton>
       </DialogTitle>
 
       <DialogContent sx={{ pt: 1.5, pb: 3 }}>
@@ -139,6 +125,8 @@ export default function LoginDialog({ open, onClose }: Props) {
               onKeyDown={handleKeyDown}
               fullWidth
               required
+              error={emailError}
+              helperText={emailError ? "Enter a valid email address" : " "}
             />
 
             <TextField
@@ -149,6 +137,8 @@ export default function LoginDialog({ open, onClose }: Props) {
               onKeyDown={handleKeyDown}
               fullWidth
               required
+              error={pwdError}
+              helperText={pwdError ? "Minimum 6 characters" : " "}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
@@ -170,7 +160,7 @@ export default function LoginDialog({ open, onClose }: Props) {
                   type="submit"
                   variant="contained"
                   fullWidth
-                  disabled={submitting}
+                  disabled={!isValid || submitting}
                 >
                   {submitting ? "Signing in…" : "Sign in"}
                 </Button>
@@ -180,7 +170,7 @@ export default function LoginDialog({ open, onClose }: Props) {
                 type="submit"
                 variant="contained"
                 fullWidth
-                disabled={submitting}
+                disabled={!isValid || submitting}
               >
                 {submitting ? "Signing in…" : "Sign in"}
               </Button>
@@ -190,17 +180,15 @@ export default function LoginDialog({ open, onClose }: Props) {
               variant="outlined"
               fullWidth
               onClick={onSignUp}
-              disabled={submitting}
+              disabled={!isValid || submitting}
             >
               {submitting ? "Creating…" : "Sign up"}
             </Button>
 
-            {/* Divider-ish text */}
             <Typography variant="caption" sx={{ textAlign: "center", color: "text.secondary" }}>
               or continue with
             </Typography>
 
-            {/* Google Sign-In */}
             <Box sx={{ display: "grid", placeItems: "center" }}>
               <GoogleSignInButton
                 onCredential={async (idToken) => {
