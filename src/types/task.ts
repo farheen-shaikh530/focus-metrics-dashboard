@@ -3,24 +3,23 @@
 export type Priority = "low" | "medium" | "high" | "urgent";
 export type Status   = "todo" | "in-progress" | "done";
 
-export type Task = {
+export interface Task {
   id: string;
   title: string;
   description?: string;
   priority: Priority;
   status: Status;
+  dueDate?: string;
 
-  // Dates
-  createdAt: string;              // when the task was created
-  updatedAt: string;              // last update (any change)
-  dueDate?: string;               // optional deadline (ISO)
-  completedAt?: string | null;    // ⬅️ stamp when it first reaches "done"
-
-  // Tracking
   estimateMinutes?: number;
   timeSpentMs?: number;
   timerStartedAt?: string | null;
-};
+
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;   // <-- used by KPIs
+}
+
 
 /**
  * Optional guard for status moves. If you want to forbid moving out of "done",

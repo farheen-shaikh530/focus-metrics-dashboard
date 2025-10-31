@@ -12,6 +12,7 @@ import CalendarView from "./pages/CalendarView";
 import KanbanBoard from "./pages/KanbanBoard";
 import BoardMobile from "./pages/BoardMobile";
 import { useAuth } from "./store/auth";
+import { useTasks } from "./store/useTasks";   // ⬅️ add
 
 export default function App() {
   const [mode, setMode] = useState<"light" | "dark">("light");
@@ -27,10 +28,13 @@ export default function App() {
     [mode]
   );
 
-  const { hydrate } = useAuth();
-  useEffect(() => {
-    hydrate();
-  }, [hydrate]);
+  const { hydrate: hydrateAuth } = useAuth();
+  const hydrateTasks = useTasks((s) => s.hydrate);   // ⬅️ add
+useEffect(() => {
+  hydrateAuth();
+  hydrateTasks();
+}, [hydrateAuth, hydrateTasks]);
+
 
   return (
     <ThemeProvider theme={theme}>
@@ -51,7 +55,7 @@ export default function App() {
             >
               <Route index element={<BoardMobile />} />
               <Route path="todo" element={<KanbanBoard />} />
-              <Route path="productivity" element={<Productivity />} />
+              <Route path="productivity" element={<Productivity />} /> {/* renders ProductivityPanel */}
               <Route path="calendar" element={<CalendarView />} />
             </Route>
 

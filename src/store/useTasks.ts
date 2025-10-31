@@ -5,20 +5,22 @@ import { nanoid } from "nanoid";
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek";
 import isSameOrBefore from "dayjs/plugin/isSameOrBefore";
-import { useGoals } from "./goals";
 
-import type { Task, Status } from "../types/task";
-import { loadTasks, saveTasks } from "../utils/storage";
+import type { Task, Status } from "@/types/task";
+import { loadTasks, saveTasks } from "@/utils/storage";
+import { useGoals } from "@/store/goals";
+
 
 dayjs.extend(isoWeek);
 dayjs.extend(isSameOrBefore);
 
-/** History entry (avoid global name 'History' to not clash with DOM History) */
+
+/** History entry */
 export type TaskHistory = {
   id: string;
   taskId: string;
   type: "create" | "update" | "move" | "delete";
-  at: string;               // ISO timestamp
+  at: string; // ISO timestamp
   payload?: any;
 };
 
@@ -27,10 +29,8 @@ type State = {
   hydrated: boolean;
   history: TaskHistory[];
 };
-useGoals.getState().bumpOnDone(new Date().toISOString());
 
 type Actions = {
-  
   /** Hydrate from FastAPI if available, otherwise from localStorage */
   hydrate: () => Promise<void>;
 
@@ -49,22 +49,26 @@ type Actions = {
   getWeeklyCycleTime: (weeks: number) => { weekStart: string; avgCycleMs: number }[];
   getWeeklyOnTimeRate: (weeks: number) => { weekStart: string; onTimePct: number }[];
 
-  /** Snapshot “per user”. Since this app is single-user, we return a single “Me” bucket. */
+  /** Single-user snapshot (“Me”) */
   getAssigneeStats: () => Array<{
-    assignee: string;           // "Me"
+    assignee: string;
     completed: number;
     inProgress: number;
     totalTimeMs: number;
-    avgCycleTimeMs: number;     // avg createdAt->done (ms)
-    throughputThisWeek: number; // done items this ISO week
+    avgCycleTimeMs: number;
+    throughputThisWeek: number;
   }>;
 };
 
 export type TaskStore = State & Actions;
 
+// ──────────────────────────────────────────────────────────────────────────────
+// helpers
+// ──────────────────────────────────────────────────────────────────────────────
 const nowISO = () => new Date().toISOString();
 
-const touchList = (s: any) => {
+/** force new array ref so selectors depending on `tasks` re-run */
+const touchList = (s: State) => {
   s.tasks = [...s.tasks];
 };
 
@@ -72,6 +76,13 @@ const persist = (s: State) => {
   saveTasks({ tasks: s.tasks, history: s.history });
 };
 
+/** completion timestamp used by KPIs */
+const completedWhen = (t: Task) =>
+  new Date(((t as any).completedAt as string | undefined) ?? t.updatedAt);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// store
+// ──────────────────────────────────────────────────────────────────────────────
 export const useTasks = create<TaskStore>()(
   immer((set, get) => ({
     tasks: [],
@@ -82,47 +93,45 @@ export const useTasks = create<TaskStore>()(
     hydrate: async () => {
       if (get().hydrated) return;
 
-      // Try backend first
       const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
       try {
-        const res = await fetch(`${API}/tasks`, {
-          headers: { Accept: "application/json" },
-        });
-
-        if (!res.ok) throw new Error(`API error ${res.status}`);
+        const res = await fetch(`${API}/tasks`, { headers: { Accept: "application/json" } });
+        if (!res.ok) throw new Error(`API ${res.status}`);
         const data = (await res.json()) as unknown;
 
-        // Trust an array of Task-like objects; otherwise fallback below
         if (Array.isArray(data)) {
           set((s) => {
             s.tasks = data as Task[];
+            // backfill completedAt for already-done tasks
+            s.tasks.forEach((t: any) => {
+              if (t.status === "done" && !t.completedAt) t.completedAt = t.updatedAt ?? nowISO();
+            });
             s.hydrated = true;
-            // keep existing local history until backend also serves it
-            s.history = s.history ?? [];
           });
           return;
         }
-        throw new Error("Unexpected API payload");
-      } catch (e) {
-        // Fallback to localStorage if API is not reachable
-        console.warn("API unavailable, using local storage:", e);
-        const local = loadTasks<{ tasks: Task[]; history?: TaskHistory[] }>({
-          tasks: [],
-          history: [],
-        });
-        
-        set((s) => {
-             s.tasks.forEach((t) => {
-      if (t.status === "done" && !t.completedAt) {
-        // best-effort: use updatedAt as completion time
-        t.completedAt = t.updatedAt || nowISO();
-      }
-    });
-        touchList(s);
+        throw new Error("Unexpected /tasks payload");
+     } catch (e) {
+      console.warn("API unavailable, using local storage:", e);
+      const local = loadTasks<{ tasks: Task[]; history?: TaskHistory[] }>({
+        tasks: [],
+        history: [],
+      });
 
-         
+      set((s) => {
+        s.tasks   = local.tasks || [];           // <-- add
+        s.history = local.history || [];         // <-- add
+        s.hydrated = true;                       // <-- add
+
+        // backfill completedAt for done items
+        s.tasks.forEach((t) => {
+          if (t.status === "done" && !t.completedAt) {
+            t.completedAt = t.updatedAt || new Date().toISOString();
+          }
         });
-      }
+      });
+}
+
     },
 
     // ---------- CRUD ----------
@@ -145,100 +154,68 @@ export const useTasks = create<TaskStore>()(
           at: ts,
           payload: { ...partial },
         });
+        touchList(s);
         persist(s);
       }),
 
-      updateTask: (id, patch) =>
-  set((s) => {
-    const t = s.tasks.find((x) => x.id === id);
-    if (!t) return;
+    updateTask: (id, patch) =>
+      set((s) => {
+        const t = s.tasks.find((x) => x.id === id);
+        if (!t) return;
 
-    const before = { ...t };
-    const wasDone = t.status === "done";
+        const before = { ...t };
+        const wasDone = t.status === "done";
 
-    Object.assign(t, patch);
+        Object.assign(t, patch);
 
-    // If it *became* done right now, set completedAt once
-    if (t.status === "done" && !wasDone && !t.completedAt) {
-      t.completedAt = nowISO();
-    }
+        // became done ► set completedAt once
+        if (t.status === "done" && !wasDone && !(t as any).completedAt) {
+          (t as any).completedAt = nowISO();
+          try {
+            useGoals.getState().bumpOnDone?.((t as any).completedAt);
+          } catch {}
+        }
 
-    t.updatedAt = nowISO();
-    s.history.unshift({
-      id: nanoid(),
-      taskId: id,
-      type: "update",
-      at: t.updatedAt,
-      payload: { patch, before },
-    });
+        t.updatedAt = nowISO();
+        s.history.unshift({
+          id: nanoid(),
+          taskId: id,
+          type: "update",
+          at: t.updatedAt,
+          payload: { patch, before },
+        });
+        touchList(s);
+        persist(s);
+      }),
 
-    touchList(s);   // <— force new array ref
-    persist(s);
-  }),
+    moveTask: (id, nextStatus, index) =>
+      set((s) => {
+        const i = s.tasks.findIndex((t) => t.id === id);
+        if (i < 0) return;
 
- moveTask: (id, nextStatus, index) =>
-  set((s) => {
-    const i = s.tasks.findIndex((t) => t.id === id);
-    if (i < 0) return;
+        const [t] = s.tasks.splice(i, 1);
+        const from = t.status;
+        t.status = nextStatus;
 
-    const [t] = s.tasks.splice(i, 1);
-    const from = t.status;
-    t.status = nextStatus;
-
-    if (nextStatus === "done" && !t.completedAt) {
-      t.completedAt = nowISO();
-    }
-
-    t.updatedAt = nowISO();
-    if (index === undefined) s.tasks.unshift(t);
-    else s.tasks.splice(index, 0, t);
-
-    s.history.unshift({
-      id: nanoid(),
-      taskId: id,
-      type: "move",
-      at: t.updatedAt,
-      payload: { from, to: nextStatus },
-    });
-
-    touchList(s);   // <— force new array ref
-    persist(s);
-  }),
+       if (nextStatus === "done" && !t.completedAt) {
+  t.completedAt = new Date().toISOString();
+}
 
 
-stopTimerAndOptionallyComplete: (id, markDone = false) =>
-  set((s) => {
-    const t = s.tasks.find((x) => x.id === id);
-    if (!t) return;
+        t.updatedAt = nowISO();
+        if (index === undefined) s.tasks.unshift(t);
+        else s.tasks.splice(index, 0, t);
 
-    if (t.timerStartedAt) {
-      const started = new Date(t.timerStartedAt).getTime();
-      const add = Math.max(0, Date.now() - started);
-      t.timeSpentMs = (t.timeSpentMs || 0) + add;
-      t.timerStartedAt = null;
-    }
-
-    if (markDone && t.status !== "done") {
-      const from = t.status;
-      t.status = "done";
-      if (!t.completedAt) t.completedAt = nowISO();
-
-      s.history.unshift({
-        id: nanoid(),
-        taskId: id,
-        type: "move",
-        at: nowISO(),
-        payload: { from, to: "done" },
-      });
-    }
-
-    t.updatedAt = nowISO();
-
-    touchList(s);   // <— force new array ref
-    persist(s);
-  }),
-  
-
+        s.history.unshift({
+          id: nanoid(),
+          taskId: id,
+          type: "move",
+          at: t.updatedAt,
+          payload: { from, to: nextStatus },
+        });
+        touchList(s);
+        persist(s);
+      }),
 
     deleteTask: (id) =>
       set((s) => {
@@ -251,6 +228,7 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
           at: nowISO(),
           payload: { snapshot },
         });
+        touchList(s);
         persist(s);
       }),
 
@@ -268,6 +246,7 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
           at: t.updatedAt,
           payload: { timer: "start" },
         });
+        touchList(s);
         persist(s);
       }),
 
@@ -287,6 +266,7 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
           at: t.updatedAt,
           payload: { timer: "pause", addMs: add },
         });
+        touchList(s);
         persist(s);
       }),
 
@@ -305,6 +285,7 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
         if (markDone && t.status !== "done") {
           const from = t.status;
           t.status = "done";
+          if (!(t as any).completedAt) (t as any).completedAt = nowISO();
           s.history.unshift({
             id: nanoid(),
             taskId: id,
@@ -312,13 +293,17 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
             at: nowISO(),
             payload: { from, to: "done" },
           });
+          try {
+            useGoals.getState().bumpOnDone?.((t as any).completedAt);
+          } catch {}
         }
 
         t.updatedAt = nowISO();
+        touchList(s);
         persist(s);
       }),
 
-    // ---------- analytics ----------
+    // ---------- analytics (all use completedAt ?? updatedAt) ----------
     getWeeklyDoneCounts: (weeks) => {
       const start = dayjs().subtract(weeks - 1, "week").startOf("isoWeek");
       const bucket = new Map<string, number>();
@@ -328,7 +313,7 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
       }
       get().tasks.forEach((t) => {
         if (t.status !== "done") return;
-        const wk = dayjs(t.updatedAt).startOf("isoWeek").format("YYYY-MM-DD");
+        const wk = dayjs(completedWhen(t)).startOf("isoWeek").format("YYYY-MM-DD");
         if (bucket.has(wk)) bucket.set(wk, (bucket.get(wk) || 0) + 1);
       });
       return Array.from(bucket, ([weekStart, count]) => ({ weekStart, count }));
@@ -343,9 +328,9 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
       }
       get().tasks.forEach((t) => {
         if (t.status !== "done") return;
-        const wk = dayjs(t.updatedAt).startOf("isoWeek").format("YYYY-MM-DD");
+        const wk = dayjs(completedWhen(t)).startOf("isoWeek").format("YYYY-MM-DD");
         if (!bucket.has(wk)) return;
-        const cycle = dayjs(t.updatedAt).diff(dayjs(t.createdAt));
+        const cycle = dayjs(completedWhen(t)).diff(dayjs(t.createdAt));
         if (cycle > 0) bucket.get(wk)!.push(cycle);
       });
       return Array.from(bucket, ([weekStart, arr]) => ({
@@ -359,7 +344,6 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
     getWeeklyOnTimeRate: (weeks) => {
       const start = dayjs().subtract(weeks - 1, "week").startOf("isoWeek");
       const bucket = new Map<string, { ontime: number; total: number }>();
-
       for (let i = 0; i < weeks; i++) {
         const wk = start.add(i, "week").startOf("isoWeek").format("YYYY-MM-DD");
         bucket.set(wk, { ontime: 0, total: 0 });
@@ -367,13 +351,13 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
 
       get().tasks.forEach((t) => {
         if (t.status !== "done") return;
-        const wk = dayjs(t.updatedAt).startOf("isoWeek").format("YYYY-MM-DD");
+        const wk = dayjs(completedWhen(t)).startOf("isoWeek").format("YYYY-MM-DD");
         if (!bucket.has(wk)) return;
         const cell = bucket.get(wk)!;
         cell.total += 1;
 
         // On-time if no dueDate OR completed <= dueDate
-        if (!t.dueDate || dayjs(t.updatedAt).isSameOrBefore(dayjs(t.dueDate))) {
+        if (!t.dueDate || dayjs(completedWhen(t)).isSameOrBefore(dayjs(t.dueDate))) {
           cell.ontime += 1;
         }
       });
@@ -385,7 +369,6 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
     },
 
     getAssigneeStats: () => {
-      // Single-user snapshot
       const tasks = get().tasks;
       const weekStart = dayjs().startOf("isoWeek");
       let completed = 0;
@@ -400,9 +383,9 @@ stopTimerAndOptionallyComplete: (id, markDone = false) =>
         totalTimeMs += t.timeSpentMs || 0;
 
         if (t.status === "done") {
-          const cycle = dayjs(t.updatedAt).diff(dayjs(t.createdAt));
+          const cycle = dayjs(completedWhen(t)).diff(dayjs(t.createdAt));
           if (cycle > 0) cycleTimes.push(cycle);
-          if (dayjs(t.updatedAt).isAfter(weekStart)) throughputThisWeek++;
+          if (dayjs(completedWhen(t)).isAfter(weekStart)) throughputThisWeek++;
         }
       });
 

@@ -3,11 +3,13 @@ import {
   Box,
   Grid,
   Paper,
-  Typography,
+
   Button,
   CircularProgress,
   Divider,
 } from "@mui/material";
+import ProductivityPanel from "@/components/ProductivityPanel";
+import { Stack, Typography } from "@mui/material";
 
 // tiny API helper
 const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
@@ -46,13 +48,30 @@ export default function Productivity() {
 
   return (
     <Box sx={{ maxWidth: 1040, mx: "auto", p: 3 }}>
-      <Typography variant="h4" fontWeight={800} mb={1}>
-        Productivity
-      </Typography>
-      <Typography variant="body2" color="text.secondary" mb={2}>
-        Quick weekly KPIs and an AI generated retrospective.
-      </Typography>
+     <Stack sx={{ p: 2 }} spacing={2}>
+        <Typography variant="h4" fontWeight={800}>Productivity</Typography>
+        <Typography sx={{ opacity: 0.75, mb: 1 }}>
+          Quick weekly KPIs and an AI generated retrospective.
+        </Typography>
 
+        {/* ✅ Only the live panel (uses useTasks), no server KPI boxes */}
+        <ProductivityPanel />
+      </Stack>
+
+ <Box mt={3}>
+        <Button variant="contained" onClick={runRetro} disabled={loading}>
+          {loading ? <CircularProgress size={20} /> : "Run Weekly Retro (AI)"}
+        </Button>
+
+        {retro && (
+          <Paper sx={{ p: 2, mt: 2 }}>
+            <Typography variant="subtitle2" color="text.secondary">Weekly Retro</Typography>
+            <Divider sx={{ my: 1 }} />
+            <Typography whiteSpace="pre-wrap">{retro}</Typography>
+          </Paper>
+        )}
+      </Box>
+      
       <Grid container spacing={2}>
       <Grid container spacing={2} sx={{ p: 2 }}>
 

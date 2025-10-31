@@ -1,11 +1,10 @@
+// src/pages/Dashboard.tsx
 import { motion } from "framer-motion";
 import type { Variants, Transition } from "framer-motion";
 import KanbanBoard from "./KanbanBoard";
 import WeeklyProgressChart from "../components/WeeklyProgressChart";
 import ProductivityPanel from "../components/ProductivityPanel";
 
-
-// define transition separately so TypeScript knows it's a "spring"
 const spring: Transition = { type: "spring", stiffness: 70, damping: 14 };
 
 const container: Variants = {
@@ -22,11 +21,16 @@ export default function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25, delay: 0.05 }}
       >
-       
+        Dashboard Overview
       </motion.h2>
-      <motion.h2 /* ... */>Dashboard Overview</motion.h2>
-<WeeklyProgressChart weeks={8} />
 
+      {/* ✅ Show KPI cards & charts */}
+      <ProductivityPanel />
+
+      {/* Optional: keep your weekly chart too */}
+      <WeeklyProgressChart weeks={8} />
+
+      {/* Task board */}
       <KanbanBoard />
     </motion.div>
   );

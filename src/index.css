@@ -13,3 +13,6 @@
 body {
   @apply bg-gray-50;
 }
+header, .MuiAppBar-root, .MuiToolbar-root {
+  pointer-events: auto !important;
+}

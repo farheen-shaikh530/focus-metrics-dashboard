@@ -1,6 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import "./index.css";
+
+import { useTasks } from "@/store/useTasks";
+
+if (typeof window !== "undefined") {
+  (window as any).useTasks = useTasks;
+  console.log("✅ useTasks exposed to window — you can now test in DevTools.");
+}
 
 // ⬇️ Start MSW only in dev (and optionally when a flag is set)
 async function enableMocking() {
